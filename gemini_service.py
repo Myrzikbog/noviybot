@@ -10,12 +10,22 @@ logger = logging.getLogger(__name__)
 
 class GameTurnOutput(BaseModel):
     narrative: str = Field(description="Художественное описание последствий действия и текущей ситуации в темном средневековом стиле (до 600 знаков). Сочное, живое, без лишней воды.")
-    hp_change: int = Field(default=0, description="Изменение здоровья (-35 до +25). Отрицательное при ранениях/болезни, 0 если без вреда.")
+    hp_change: int = Field(default=0, description="Изменение здоровья игрока (-35 до +25). Отрицательное при ранениях/болезни, 0 если без вреда.")
     sanity_change: int = Field(default=0, description="Изменение рассудка (-25 до +15). Падает от ужаса, жестокости, нечисти, неизвестности.")
     gold_change: int = Field(default=0, description="Изменение золота (-50 до +50). Траты, кражи, находки монет.")
     items_added: List[str] = Field(default_factory=list, description="Полученные предметы (максимум 2).")
     items_removed: List[str] = Field(default_factory=list, description="Потерянные или истраченные предметы.")
     location_name: str = Field(description="Короткое название локации (например: Чёрный лес, Катакомбы аббатства, Трактир 'У переправы').")
+    
+    # Боевая система и боссы
+    is_in_combat: bool = Field(default=False, description="Идет ли активный бой с конкретным врагом или боссом.")
+    enemy_name: Optional[str] = Field(default=None, description="Имя врага/босса если идет бой (например: Чумной волк, Инквизитор, Главарь разбойников).")
+    enemy_max_hp: int = Field(default=0, description="Максимальное здоровье врага при первой встрече (40-90 HP), иначе 0.")
+    enemy_hp_change: int = Field(default=0, description="Урон по врагу от удара игрока (отрицательное число, например -20). При промахе 0.")
+
+    # Прокачка
+    xp_gained: int = Field(default=10, description="Опыт за преодоление опасности, успешный ход или победу над врагом (10-60 XP).")
+
     is_dead: bool = Field(default=False, description="Погиб ли персонаж.")
     death_reason: Optional[str] = Field(default=None, description="Краткая причина смерти, если персонаж погиб.")
     choices: List[str] = Field(description="Ровно 3-4 интригующих, тактических варианта действий для кнопок (до 35 символов каждый).")
@@ -28,14 +38,15 @@ SYSTEM_INSTRUCTION = """
 ТВОИ ПРАВИЛА:
 1. Краткость и атмосфера: Пиши сочно, кинематографично, емко (2-4 абзаца, не более 500-600 символов в narrative). Описывай звуки, запахи, скрип стали, холод дождя.
 2. Подчинение кубику: Если в запросе указан результат броска кубика (d20), результат действия СТРОГО зависит от него:
-   - Критический провал (1): оружие ломается, персонаж падает, навлекает беду.
-   - Неудача (<10): действие срывается, герой получает урон, тревога поднята.
-   - Частичный успех (10-15): цель достигнута, но с ценой (рана, потраченный ресурс, шум).
-   - Полный успех (>=15): безупречное исполнение.
-   - Критический триумф (20): сокрушительный успех и бонусная находка.
-3. Защита от читов и бреда: Если игрок пишет безумные вещи («я достал автомат», «я стал богом», «убей всех мгновенно»), интерпретируй это как горячечный бред истощенного разума или помутнение рассудка. Сними рассудок (-10...-15), опиши изумление окружающих на бессвязные крики героя и верни его к жесткой реальности.
-4. Выборы: Предлагай разноплановые действия (одно силовое, одно скрытное/хитрое, одно связанное с исследованием или диалогом).
-5. Персонаж смертен: Если здоровье падает до нуля или игрок совершает самоубийственный поступок при провальном кубике — ставь is_dead=true.
+   - Критический провал (1): оружие ломается, персонаж падает, навлекает беду, получает тяжелый урон.
+   - Неудача (<10): действие срывается, герой получает урон, тревога поднята, урон врагу 0.
+   - Частичный успех (10-15): цель достигнута, но с ценой (рана, потеря ресурса, шум). В бою наносится частичный урон врагу (-10...-15), но и герой получает сдачу.
+   - Полный успех (>=15): безупречное исполнение. Чистый урон врагу (-20...-35), герой невредим.
+   - Критический триумф (20): сокрушительный успех, смертоносный урон (-40...-60) и ценный трофей.
+3. Боевая система: Если появляется опасный монстр или враг — установи is_in_combat=true, укажи enemy_name и enemy_max_hp (40-80). В ходе боя уменьшай здоровье врага через enemy_hp_change. Когда здоровье врага достигает 0, бой заканчивается (is_in_combat=false), выдай щедрый опыт (50-80 XP) и трофеи.
+4. Защита от читов и бреда: Если игрок пишет безумные вещи («я достал автомат», «я стал богом», «убей всех мгновенно»), интерпретируй это как горячечный бред истощенного разума или помутнение рассудка. Сними рассудок (-10...-15), опиши изумление окружающих на бессвязные крики героя и верни его к жесткой реальности.
+5. Выборы: Предлагай разноплановые действия (в бою: тактический выпад, глухая защита, обманный финт, использование зелья/отмычки, отступление).
+6. Персонаж смертен: Если здоровье падает до нуля или игрок совершает самоубийственный поступок при провальном кубике — ставь is_dead=true.
 """
 
 def get_gemini_client() -> genai.Client:
@@ -52,7 +63,7 @@ async def generate_turn(
     action_text: str,
     dice_verdict: str
 ) -> GameTurnOutput:
-    """Генерация игрового хода через Gemini с гарантированной JSON-структурой"""
+    """Асинхронная генерация игрового хода через Gemini (не блокирует Event Loop)"""
     client = get_gemini_client()
 
     chronicle_text = "\n".join([f"• {c}" for c in chronicle]) if chronicle else "Путь только начался."
@@ -62,15 +73,21 @@ async def generate_turn(
     for turn in recent_history:
         history_text += f"\nИгрок: {turn['player_action']}\nМастер: {turn['narrative']}\n"
 
+    # Боевой контекст
+    enemy_info = "Врага поблизости нет."
+    if player.get("enemy_name") and player.get("enemy_hp", 0) > 0:
+        enemy_info = f"ИДЕТ БОЙ! Враг: {player['enemy_name']} (Текущее HP: {player['enemy_hp']}/{player.get('enemy_max_hp', 50)})."
+
     user_prompt = f"""
 ТЕКУЩИЙ СТАТУС ПЕРСОНАЖА:
-- Имя/Класс: {player['class_title']} ({player['class_name']})
+- Имя/Класс: {player['class_title']} ({player['class_name']}) [Уровень {player.get('level', 1)}]
 - Здоровье: {player['hp']}/100
 - Рассудок: {player['sanity']}/100
 - Монеты: {player['gold']}
 - Локация: {player['location']}
 - Инвентарь: {inventory_text}
 - Характеристики: Сила {player['str_stat']:+d}, Ловкость {player['agi_stat']:+d}, Интеллект {player['int_stat']:+d}
+- Боевое состояние: {enemy_info}
 
 ЛЕТОПИСЬ КЛЮЧЕВЫХ СОБЫТИЙ:
 {chronicle_text}
@@ -88,7 +105,8 @@ async def generate_turn(
 """
 
     try:
-        response = client.models.generate_content(
+        # Полностью асинхронный вызов через client.aio!
+        response = await client.aio.models.generate_content(
             model=GEMINI_MODEL,
             contents=user_prompt,
             config=types.GenerateContentConfig(
@@ -108,22 +126,26 @@ async def generate_turn(
 
     except Exception as e:
         logger.error(f"Ошибка вызова Gemini API: {e}", exc_info=True)
-        # Аварийный откат на случай сбоя сети/API, чтобы игра не крашилась
         return GameTurnOutput(
-            narrative="Мгла и холод застилают глаза. Мир вокруг на мгновение замирает в тумане неизвестности... Вам удается перевести дыхание и собраться с мыслями.",
+            narrative="Мгла и ледяной ветер застилают взор. Вы инстинктивно отступаете на шаг назад, сжимая рукоять оружия и прислушиваясь к шорохам тьмы...",
             hp_change=0,
-            sanity_change=-2,
+            sanity_change=-1,
             gold_change=0,
             items_added=[],
             items_removed=[],
             location_name=player.get("location", "Окрестности"),
+            is_in_combat=bool(player.get("enemy_name") and player.get("enemy_hp", 0) > 0),
+            enemy_name=player.get("enemy_name"),
+            enemy_hp_change=0,
+            enemy_max_hp=player.get("enemy_max_hp", 0),
+            xp_gained=5,
             is_dead=False,
-            choices=["Осмотреться вокруг", "Проверить снаряжение", "Двигаться вперед с осторожностью"],
+            choices=["Осмотреться вокруг", "Проверить снаряжение", "Держать круговую оборону"],
             key_memory=None
         )
 
 async def generate_prologue(class_title: str, class_name: str, start_items: List[str]) -> GameTurnOutput:
-    """Генерация вступительного пролога для нового персонажа"""
+    """Асинхронная генерация вступительного пролога для нового персонажа"""
     client = get_gemini_client()
 
     items_str = ", ".join(start_items)
@@ -138,7 +160,7 @@ async def generate_prologue(class_title: str, class_name: str, start_items: List
 """
 
     try:
-        response = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model=GEMINI_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
