@@ -61,62 +61,47 @@ python bot.py
 
 ---
 
-## 🖥️ Деплой на VPS (1 ГБ RAM, 2 vCPU, 30 ГБ SSD)
+## 🖥️ Быстрый деплой на VPS (1 ГБ RAM, 2 vCPU, 30 ГБ SSD)
 
-### Шаг 1: Настройка Swap (файла подкачки на 2 ГБ)
-На Linux VPS с 1 ГБ ОЗУ обязательно создайте swap-файл (защитит от пиковых скачков памяти):
+Мы подготовили **автоматический скрипт деплоя** (`deploy.sh`), который сделает всё за вас:
+1. Создаст и включит **2 ГБ Swap** (файл подкачки на SSD с тюнингом под низкую задержку).
+2. Установит Python 3, venv, git и все зависимости.
+3. Запросит ваши токены `BOT_TOKEN` и `GEMINI_API_KEY` (если `.env` ещё не настроен).
+4. Создаст и запустит фоновую службу `systemd` (бот будет работать 24/7 и автоматически перезапускаться при перезагрузке сервера).
+
+### Команда быстрого запуска на вашем сервере (одной строкой):
+
 ```bash
-sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+curl -sSL https://raw.githubusercontent.com/Myrzikbog/noviybot/main/deploy.sh | sudo bash
 ```
 
-### Шаг 2: Клонирование и настройка окружения
+*Или через клонирование репозитория:*
 ```bash
-git clone <ваш_репозиторий> /opt/noviybot
-cd /opt/noviybot
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-nano .env   # вставьте ваши токены
+git clone https://github.com/Myrzikbog/noviybot.git
+cd noviybot
+sudo bash deploy.sh
 ```
 
-### Шаг 3: Автозапуск через Systemd (24/7 в фоне)
-Создайте файл сервиса:
-```bash
-sudo nano /etc/systemd/system/darkage_bot.service
-```
-Вставьте конфигурацию:
-```ini
-[Unit]
-Description=Dark Age Telegram RPG Bot
-After=network.target
+---
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/noviybot
-ExecStart=/opt/noviybot/venv/bin/python /opt/noviybot/bot.py
-Restart=always
-RestartSec=10
+## 🛠️ Управление ботом на VPS
 
-[Install]
-WantedBy=multi-user.target
-```
-
-Запустите и включите автозапуск:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable darkage_bot
-sudo systemctl start darkage_bot
-```
-
-Проверить статус:
-```bash
-sudo systemctl status darkage_bot
-```
+* **Проверить статус службы:**
+  ```bash
+  sudo systemctl status darkage_bot
+  ```
+* **Смотреть живые логи:**
+  ```bash
+  sudo journalctl -u darkage_bot -f
+  ```
+* **Перезапустить бота:**
+  ```bash
+  sudo systemctl restart darkage_bot
+  ```
+* **Остановить бота:**
+  ```bash
+  sudo systemctl stop darkage_bot
+  ```
 
 ---
 
@@ -124,6 +109,7 @@ sudo systemctl status darkage_bot
 
 ```
 noviybot/
+├── deploy.sh          # Скрипт быстрого деплоя на VPS (создает Swap, systemd и зависимости)
 ├── bot.py             # Точка входа, диспетчер aiogram 3, хэндлеры команд и кнопок
 ├── gemini_service.py  # Интеграция с Google Gemini API (Structured Outputs Pydantic)
 ├── game_logic.py      # Механика d20 кубиков, классы, расчет полосок здоровья/рассудка
