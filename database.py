@@ -25,6 +25,8 @@ async def init_db():
                 username TEXT,
                 class_name TEXT NOT NULL,
                 class_title TEXT NOT NULL,
+                background TEXT DEFAULT '',
+                main_quest TEXT DEFAULT '',
                 hp INTEGER NOT NULL DEFAULT 100,
                 sanity INTEGER NOT NULL DEFAULT 100,
                 gold INTEGER NOT NULL DEFAULT 15,
@@ -42,6 +44,7 @@ async def init_db():
                 enemy_hp INTEGER NOT NULL DEFAULT 0,
                 enemy_max_hp INTEGER NOT NULL DEFAULT 0,
                 current_choices TEXT DEFAULT '[]',
+                current_choice_stats TEXT DEFAULT '[]',
                 last_narrative TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -56,16 +59,61 @@ async def init_db():
             ("xp", "INTEGER NOT NULL DEFAULT 0"),
             ("level", "INTEGER NOT NULL DEFAULT 1"),
             ("stat_points", "INTEGER NOT NULL DEFAULT 0"),
+            ("background", "TEXT DEFAULT ''"),
+            ("main_quest", "TEXT DEFAULT ''"),
             ("enemy_name", "TEXT DEFAULT NULL"),
             ("enemy_hp", "INTEGER NOT NULL DEFAULT 0"),
             ("enemy_max_hp", "INTEGER NOT NULL DEFAULT 0"),
             ("current_choices", "TEXT DEFAULT '[]'"),
+            ("current_choice_stats", "TEXT DEFAULT '[]'"),
             ("last_narrative", "TEXT DEFAULT ''"),
         ]
 
         for col_name, col_type in new_columns:
             if col_name not in columns:
                 await db.execute(f"ALTER TABLE players ADD COLUMN {col_name} {col_type};")
+
+        # Таблица спутников и отношений
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS companions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                title TEXT NOT NULL,
+                archetype TEXT NOT NULL,
+                affinity INTEGER NOT NULL DEFAULT 50,
+                relationship_status TEXT NOT NULL DEFAULT 'Попутчик',
+                hp INTEGER NOT NULL DEFAULT 50,
+                max_hp INTEGER NOT NULL DEFAULT 50,
+                personality TEXT DEFAULT '',
+                temperament TEXT DEFAULT '',
+                speech_style TEXT DEFAULT '',
+                quirks TEXT DEFAULT '',
+                hidden_motive TEXT DEFAULT '',
+                system_prompt TEXT DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES players (user_id) ON DELETE CASCADE
+            )
+        """)
+
+        # Таблица персонажей мира (NPC) с их персональными промптами и характерами
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS npcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                title TEXT NOT NULL,
+                temperament TEXT NOT NULL DEFAULT '',
+                speech_style TEXT NOT NULL DEFAULT '',
+                quirks TEXT NOT NULL DEFAULT '',
+                hidden_motive TEXT NOT NULL DEFAULT '',
+                affinity INTEGER NOT NULL DEFAULT 50,
+                system_prompt TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES players (user_id) ON DELETE CASCADE
+            )
+        """)
 
         # Таблица инвентаря
         await db.execute("""
@@ -101,7 +149,7 @@ async def init_db():
             )
         """)
 
-        # Таблица «Кладбище павших героев» (Глобальный архив смертей)
+        # Таблица «Кладбище павших героев»
         await db.execute("""
             CREATE TABLE IF NOT EXISTS graveyard (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +181,8 @@ async def create_player(
     username: str,
     class_name: str,
     class_title: str,
+    background: str,
+    main_quest: str,
     hp: int,
     sanity: int,
     gold: int,
@@ -141,20 +191,23 @@ async def create_player(
     int_stat: int,
     start_items: List[str]
 ) -> Dict[str, Any]:
-    """Создать нового персонажа с полной очисткой старого состояния"""
+    """Создать нового персонажа с полной очисткой старого состояния и спутников"""
     async with get_db() as db:
         await db.execute("DELETE FROM players WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM companions WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM npcs WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM inventory WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM chronicle WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM recent_turns WHERE user_id = ?", (user_id,))
 
         await db.execute("""
             INSERT INTO players (
-                user_id, username, class_name, class_title, hp, sanity, gold,
-                turn_count, location, str_stat, agi_stat, int_stat, stat_points, is_dead,
-                xp, level, enemy_name, enemy_hp, enemy_max_hp, current_choices, last_narrative
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'Трактир Старый Вепрь', ?, ?, ?, 0, 0, 0, 1, NULL, 0, 0, '[]', '')
-        """, (user_id, username, class_name, class_title, hp, sanity, gold, str_stat, agi_stat, int_stat))
+                user_id, username, class_name, class_title, background, main_quest,
+                hp, sanity, gold, turn_count, location, str_stat, agi_stat, int_stat,
+                stat_points, is_dead, xp, level, enemy_name, enemy_hp, enemy_max_hp,
+                current_choices, current_choice_stats, last_narrative
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'Трактир Старый Вепрь', ?, ?, ?, 0, 0, 0, 1, NULL, 0, 0, '[]', '[]', '')
+        """, (user_id, username, class_name, class_title, background, main_quest, hp, sanity, gold, str_stat, agi_stat, int_stat))
 
         for item in start_items:
             await db.execute(
@@ -164,7 +217,7 @@ async def create_player(
 
         await db.execute(
             "INSERT INTO chronicle (user_id, turn, event_summary) VALUES (?, 1, ?)",
-            (user_id, f"Начал свой путь как {class_title} в трактире 'Старый Вепрь'.")
+            (user_id, f"Начал свой путь как {class_title} ({background}) в трактире 'Старый Вепрь'.")
         )
         await db.commit()
 
@@ -196,7 +249,7 @@ async def update_player_state(
         if not death_reason:
             death_reason = "Смерть от несовместимых с жизнью ран."
 
-    # Проверка гибели от безумия (Sanity <= 0)
+    # Проверка гибели от безумия
     elif new_sanity <= 0:
         is_dead = True
         if not death_reason:
@@ -211,7 +264,6 @@ async def update_player_state(
         """, (new_hp, new_sanity, new_gold, new_turn, new_loc, 1 if is_dead else 0, death_reason, user_id))
         await db.commit()
 
-    # Запись на кладбище строго один раз (если персонаж только что погиб)
     if is_dead and not player.get("is_dead"):
         await record_death(
             user_id=user_id,
@@ -225,29 +277,39 @@ async def update_player_state(
 
     return await get_player(user_id)
 
-async def save_choices_and_narrative(user_id: int, choices: List[str], narrative: str):
-    """Сохранение кнопок и текста в БД (неубиваемость при перезагрузке бота)"""
+async def update_main_quest(user_id: int, new_quest: str):
+    """Обновление текущей сюжетной цели"""
+    async with get_db() as db:
+        await db.execute("UPDATE players SET main_quest = ? WHERE user_id = ?", (new_quest, user_id))
+        await db.commit()
+
+async def save_choices_and_narrative(user_id: int, choices: List[str], choice_stats: List[str], narrative: str):
+    """Сохранение кнопок, характеристик для кубика и текста в БД (неубиваемость при перезагрузке бота)"""
     async with get_db() as db:
         await db.execute(
-            "UPDATE players SET current_choices = ?, last_narrative = ? WHERE user_id = ?",
-            (json.dumps(choices, ensure_ascii=False), narrative, user_id)
+            "UPDATE players SET current_choices = ?, current_choice_stats = ?, last_narrative = ? WHERE user_id = ?",
+            (json.dumps(choices, ensure_ascii=False), json.dumps(choice_stats, ensure_ascii=False), narrative, user_id)
         )
         await db.commit()
 
-async def get_saved_choices_and_narrative(user_id: int) -> Tuple[List[str], str]:
-    """Получение сохраненных кнопок и текста из SQLite"""
+async def get_saved_choices_and_narrative(user_id: int) -> Tuple[List[str], List[str], str]:
+    """Получение сохраненных кнопок, характеристик кубика и текста из SQLite"""
     player = await get_player(user_id)
     if not player:
-        return [], ""
+        return [], [], ""
     try:
         choices = json.loads(player.get("current_choices") or "[]")
     except Exception:
         choices = []
+    try:
+        choice_stats = json.loads(player.get("current_choice_stats") or "[]")
+    except Exception:
+        choice_stats = []
     narrative = player.get("last_narrative") or ""
-    return choices, narrative
+    return choices, choice_stats, narrative
 
 async def update_combat_state(user_id: int, enemy_name: Optional[str], enemy_hp: int, enemy_max_hp: int):
-    """Обновление статуса боя с боссом/врагом"""
+    """Обновление статуса боя с врагом"""
     async with get_db() as db:
         await db.execute("""
             UPDATE players
@@ -257,11 +319,7 @@ async def update_combat_state(user_id: int, enemy_name: Optional[str], enemy_hp:
         await db.commit()
 
 async def add_xp(user_id: int, xp_amount: int) -> Tuple[int, int, bool]:
-    """
-    Начисление опыта и проверка Level Up.
-    Сбалансированная формула: needed_xp = level * 150 + 50.
-    При Level Up начисляется +1 stat_points.
-    """
+    """Начисление опыта и расчет Level Up"""
     player = await get_player(user_id)
     if not player or xp_amount <= 0:
         return 0, 1, False
@@ -291,11 +349,7 @@ async def add_xp(user_id: int, xp_amount: int) -> Tuple[int, int, bool]:
     return current_xp, current_lvl, did_level_up
 
 async def level_up_stat(user_id: int, stat_choice: str) -> Optional[Dict[str, Any]]:
-    """
-    Безопасная прокачка характеристики:
-    Проверяет наличие нераспределенных stat_points.
-    Списывает 1 очко, усиливает характеристику и восстанавливает +25 HP и +25 Рассудка.
-    """
+    """Прокачка характеристики при Level Up"""
     if stat_choice not in ("str", "agi", "int"):
         return None
 
@@ -329,7 +383,7 @@ async def record_death(user_id: int, username: str, class_title: str, turns: int
         await db.commit()
 
 async def get_hall_of_fame(limit: int = 10) -> List[Dict[str, Any]]:
-    """Топ-10 самых живучих героев всех времен"""
+    """Топ самых живучих героев"""
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
@@ -342,7 +396,7 @@ async def get_hall_of_fame(limit: int = 10) -> List[Dict[str, Any]]:
             return [dict(r) for r in rows]
 
 async def get_graveyard(limit: int = 10) -> List[Dict[str, Any]]:
-    """Последние 10 погибших персонажей"""
+    """Последние погибшие персонажи"""
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
@@ -353,6 +407,147 @@ async def get_graveyard(limit: int = 10) -> List[Dict[str, Any]]:
         """, (limit,)) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+# --- СИСТЕМА СПУТНИКОВ И ОТНОШЕНИЙ ---
+
+async def add_companion(
+    user_id: int,
+    name: str,
+    title: str,
+    archetype: str,
+    personality: str,
+    initial_affinity: int = 50
+) -> Optional[Dict[str, Any]]:
+    """Добавить нового спутника персонажа"""
+    async with get_db() as db:
+        # Проверяем, нет ли уже такого спутника
+        async with db.execute("SELECT id FROM companions WHERE user_id = ? AND name = ?", (user_id, name)) as cur:
+            if await cur.fetchone():
+                return None
+
+        status = "Попутчик"
+        if initial_affinity >= 65:
+            status = "Товарищ"
+        elif initial_affinity < 45:
+            status = "Недоверие"
+
+        await db.execute("""
+            INSERT INTO companions (user_id, name, title, archetype, affinity, relationship_status, personality, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        """, (user_id, name, title, archetype, initial_affinity, status, personality))
+        await db.commit()
+
+    return await get_active_companion(user_id)
+
+async def get_companions(user_id: int) -> List[Dict[str, Any]]:
+    """Получить всех спутников игрока"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM companions WHERE user_id = ? ORDER BY is_active DESC, id ASC", (user_id,)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+async def get_active_companion(user_id: int) -> Optional[Dict[str, Any]]:
+    """Получить текущего активного спутника"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM companions WHERE user_id = ? AND is_active = 1 LIMIT 1", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+async def update_companion_affinity(user_id: int, companion_name: str, delta: int) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Изменение симпатии/отношений со спутником"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM companions WHERE user_id = ? AND name = ?", (user_id, companion_name)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None, ""
+            comp = dict(row)
+
+        new_aff = max(0, min(100, comp["affinity"] + delta))
+        if new_aff >= 85:
+            new_status = "❤️ Близкая душа (Любовь / Преданность)"
+        elif new_aff >= 65:
+            new_status = "🛡️ Верный товарищ"
+        elif new_aff >= 45:
+            new_status = "🤝 Попутчик"
+        elif new_aff >= 25:
+            new_status = "❄️ Недоверие"
+        else:
+            new_status = "💔 Вражда"
+
+        await db.execute("""
+            UPDATE companions
+            SET affinity = ?, relationship_status = ?
+            WHERE user_id = ? AND name = ?
+        """, (new_aff, new_status, user_id, companion_name))
+        await db.commit()
+
+        delta_sign = f"+{delta}" if delta > 0 else f"{delta}"
+        msg = f"Отношения с <b>{companion_name}</b>: {delta_sign}% (теперь: {new_status})"
+        comp["affinity"] = new_aff
+        comp["relationship_status"] = new_status
+        return comp, msg
+
+async def remove_companion(user_id: int, companion_name: str):
+    """Удаление спутника (ушел или предал)"""
+    async with get_db() as db:
+        await db.execute("DELETE FROM companions WHERE user_id = ? AND name = ?", (user_id, companion_name))
+        await db.commit()
+
+# --- СИСТЕМА ПЕРСОНАЖЕЙ МИРА (NPC) И ИХ ПРОМПТОВ ---
+
+async def save_or_update_npc(
+    user_id: int,
+    name: str,
+    title: str,
+    temperament: str,
+    speech_style: str,
+    quirks: str,
+    hidden_motive: str,
+    affinity: int = 50,
+    system_prompt: str = ""
+) -> Dict[str, Any]:
+    """Сохранение или обновление профайла/промпта NPC"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT id FROM npcs WHERE user_id = ? AND name = ?", (user_id, name)) as cur:
+            row = await cur.fetchone()
+            if row:
+                await db.execute("""
+                    UPDATE npcs
+                    SET title = ?, temperament = ?, speech_style = ?, quirks = ?,
+                        hidden_motive = ?, affinity = ?, system_prompt = ?
+                    WHERE user_id = ? AND name = ?
+                """, (title, temperament, speech_style, quirks, hidden_motive, affinity, system_prompt, user_id, name))
+            else:
+                await db.execute("""
+                    INSERT INTO npcs (user_id, name, title, temperament, speech_style, quirks, hidden_motive, affinity, system_prompt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, name, title, temperament, speech_style, quirks, hidden_motive, affinity, system_prompt))
+        await db.commit()
+
+        async with db.execute("SELECT * FROM npcs WHERE user_id = ? AND name = ?", (user_id, name)) as cur:
+            return dict(await cur.fetchone())
+
+async def get_npcs(user_id: int, limit: int = 6) -> List[Dict[str, Any]]:
+    """Получение известных NPC вокруг героя"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM npcs WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit)) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+async def get_npc_by_name(user_id: int, name: str) -> Optional[Dict[str, Any]]:
+    """Поиск NPC по имени"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM npcs WHERE user_id = ? AND name = ?", (user_id, name)) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 # --- Инвентарь и использование расходников ---
 
@@ -365,7 +560,7 @@ async def get_inventory_items(user_id: int) -> List[Dict[str, Any]]:
             return [dict(r) for r in rows]
 
 async def get_inventory_count(user_id: int) -> int:
-    """Общее количество уникальных слотов инвентаря"""
+    """Общее количество слотов инвентаря"""
     async with get_db() as db:
         async with db.execute("SELECT COUNT(*) FROM inventory WHERE user_id = ?", (user_id,)) as cur:
             row = await cur.fetchone()
@@ -374,7 +569,6 @@ async def get_inventory_count(user_id: int) -> int:
 async def add_item(user_id: int, item_name: str, quantity: int = 1) -> bool:
     """Добавить предмет с проверкой лимита рюкзака"""
     async with get_db() as db:
-        # Проверяем, есть ли уже этот предмет
         async with db.execute("SELECT id, quantity FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name)) as cursor:
             row = await cursor.fetchone()
             if row:
@@ -382,7 +576,6 @@ async def add_item(user_id: int, item_name: str, quantity: int = 1) -> bool:
                 await db.commit()
                 return True
 
-        # Если нового предмета нет, проверяем лимит слотов
         async with db.execute("SELECT COUNT(*) FROM inventory WHERE user_id = ?", (user_id,)) as c:
             count = (await c.fetchone())[0]
             if count >= MAX_INVENTORY_CAPACITY:
@@ -393,7 +586,7 @@ async def add_item(user_id: int, item_name: str, quantity: int = 1) -> bool:
         return True
 
 async def remove_item(user_id: int, item_name: str, quantity: int = 1) -> bool:
-    """Безопасное удаление предмета без SQL wildcard injection"""
+    """Безопасное удаление предмета"""
     async with get_db() as db:
         async with db.execute(
             "SELECT id, quantity FROM inventory WHERE user_id = ? AND item_name = ?",
@@ -417,7 +610,6 @@ async def use_consumable(user_id: int, item_name: str, heal_hp: int, heal_san: i
         return False, "Персонаж мертв."
 
     async with get_db() as db:
-        # Проверяем наличие предмета
         async with db.execute("SELECT id, quantity FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name)) as cur:
             row = await cur.fetchone()
             if not row:
@@ -429,7 +621,6 @@ async def use_consumable(user_id: int, item_name: str, heal_hp: int, heal_san: i
             else:
                 await db.execute("DELETE FROM inventory WHERE id = ?", (item_id,))
 
-        # Лечим персонажа (с учетом бонуса интеллекта: +5 HP за каждый пункт интеллекта выше 0)
         int_bonus = max(0, player.get("int_stat", 0) * 5) if heal_hp > 0 else 0
         actual_heal_hp = heal_hp + int_bonus
         new_hp = min(MAX_HP, player["hp"] + actual_heal_hp)
@@ -442,23 +633,20 @@ async def use_consumable(user_id: int, item_name: str, heal_hp: int, heal_san: i
     return True, f"Вы использовали <b>{item_name}</b> (+{actual_heal_hp} HP{bonus_msg}, +{heal_san} Рассудка)!"
 
 async def buy_shop_item(user_id: int, item_name: str, cost: int) -> Tuple[bool, str]:
-    """Атомарная покупка предмета в лавке торговца с защитой от двойного списания"""
+    """Покупка предмета в лавке"""
     async with get_db() as db:
-        # Проверяем вместимость инвентаря
         async with db.execute("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name != ?", (user_id, item_name)) as cur:
             other_slots = (await cur.fetchone())[0]
             if other_slots >= MAX_INVENTORY_CAPACITY:
                 return False, f"Ваш рюкзак забит до отказа ({MAX_INVENTORY_CAPACITY}/{MAX_INVENTORY_CAPACITY})! Освободите место."
 
-        # Атомарное списание средств
         cur = await db.execute(
             "UPDATE players SET gold = gold - ? WHERE user_id = ? AND gold >= ? AND is_dead = 0",
             (cost, user_id, cost)
         )
         if cur.rowcount == 0:
-            return False, f"Недостаточно монет или герой погиб!"
+            return False, "Недостаточно монет или герой погиб!"
 
-        # Начисление предмета
         async with db.execute("SELECT id, quantity FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name)) as c:
             row = await c.fetchone()
             if row:
@@ -469,6 +657,21 @@ async def buy_shop_item(user_id: int, item_name: str, cost: int) -> Tuple[bool, 
         await db.commit()
 
     return True, f"Вы приобрели <b>{item_name}</b> за {cost} монет!"
+
+async def rest_at_camp(user_id: int) -> Tuple[bool, str]:
+    """Привал и отдых у костра: восстанавливает +20 HP и +15 Рассудка"""
+    player = await get_player(user_id)
+    if not player or player["is_dead"]:
+        return False, "Мертвецы не отдыхают."
+
+    new_hp = min(MAX_HP, player["hp"] + 20)
+    new_san = min(MAX_SANITY, player["sanity"] + 15)
+
+    async with get_db() as db:
+        await db.execute("UPDATE players SET hp = ?, sanity = ? WHERE user_id = ?", (new_hp, new_san, user_id))
+        await db.commit()
+
+    return True, "🔥 Вы развели костер, согрелись горячей похлебкой и перевязали ноющие раны (+20 HP, +15 Рассудка)."
 
 # --- Хроника и история ---
 
@@ -487,7 +690,7 @@ async def get_chronicle(user_id: int, limit: int = 10) -> List[str]:
             (user_id, limit)
         ) as cursor:
             rows = await cursor.fetchall()
-            return [f"Ход {r[0]}: {r[1]}" for r in reversed(rows)]
+            return [f"День {r[0]}: {r[1]}" for r in reversed(rows)]
 
 async def save_turn_history(user_id: int, player_action: str, narrative: str, turn: int):
     async with get_db() as db:

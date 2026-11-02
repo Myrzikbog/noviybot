@@ -1,9 +1,9 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import game_logic as gl
 
 def get_class_selection_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура выбора класса с прозрачной демонстрацией характеристик"""
+    """Клавиатура выбора класса с характеристиками"""
     keyboard = [
         [InlineKeyboardButton(text="⚔️ Мечник (СИЛ +2 | HP 100 | 15 🪙)", callback_data="class:swordsman")],
         [InlineKeyboardButton(text="🧪 Лекарь (ИНТ +2, ЛОВ +1 | San 90 | 20 🪙)", callback_data="class:medicus")],
@@ -11,14 +11,36 @@ def get_class_selection_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_game_turn_keyboard(choices: List[str], choice_stats: List[str] = None, is_in_combat: bool = False) -> InlineKeyboardMarkup:
-    """Компактная клавиатура игрового хода: эргономично на мобильных экранах"""
+def get_background_selection_keyboard(class_key: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора предыстории и личной тайны персонажа"""
+    keyboard = []
+    for bg_id, bg_info in gl.BACKGROUNDS.items():
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{bg_info['title']} ({bg_info['subtitle']})",
+                callback_data=f"bg:{class_key}:{bg_id}"
+            )
+        ])
+    keyboard.append([
+        InlineKeyboardButton(text="◀️ Назад к выбору класса", callback_data="back_to_class_select")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_game_turn_keyboard(
+    choices: List[str],
+    choice_stats: List[str] = None,
+    is_in_combat: bool = False,
+    has_companion: bool = False
+) -> InlineKeyboardMarkup:
+    """Эргономичная клавиатура игрового хода с понятными метками характеристик"""
     keyboard = []
 
     stat_icons = {
         "str": "⚔️ [Сила]",
         "agi": "🦶 [Ловкость]",
         "int": "🧠 [Интеллект]",
+        "speech": "💬 [Слово]",
+        "insanity": "👁️ [Безумие]",
         "luck": "👉 [Удача]"
     }
 
@@ -26,36 +48,75 @@ def get_game_turn_keyboard(choices: List[str], choice_stats: List[str] = None, i
     for i, choice in enumerate(choices):
         hint = choice_stats[i] if choice_stats and i < len(choice_stats) else "luck"
         prefix = stat_icons.get(hint, "👉")
-        button_text = choice if len(choice) <= 35 else choice[:32] + "..."
+        button_text = choice if len(choice) <= 34 else choice[:31] + "..."
         keyboard.append([InlineKeyboardButton(text=f"{prefix} {button_text}", callback_data=f"choice:{i}")])
 
-    # Своё действие
+    # Кнопка свободного действия или речи
     keyboard.append([
-        InlineKeyboardButton(text="✍️ Написать своё действие текстом", callback_data="custom_action")
+        InlineKeyboardButton(text="✍️ Своё действие / 🗣️ Сказать персонажу", callback_data="custom_action")
     ])
 
-    # Компактная сервисная строка (всего 3 кнопки в 1 ряд!)
+    # Компактная сервисная строка управления
     if is_in_combat:
         management_row = [
             InlineKeyboardButton(text="🎒 Рюкзак", callback_data="show_inventory"),
+            InlineKeyboardButton(text="👥 Спутники", callback_data="show_companions"),
             InlineKeyboardButton(text="🏃 Отступить", callback_data="choice:retreat"),
             InlineKeyboardButton(text="⚙️ Меню", callback_data="show_main_menu")
         ]
     else:
         management_row = [
             InlineKeyboardButton(text="🎒 Рюкзак", callback_data="show_inventory"),
-            InlineKeyboardButton(text="🛒 Лавка", callback_data="show_shop"),
+            InlineKeyboardButton(text="👥 Спутники", callback_data="show_companions"),
+            InlineKeyboardButton(text="⛺ Привал", callback_data="show_camp"),
             InlineKeyboardButton(text="⚙️ Меню", callback_data="show_main_menu")
         ]
     keyboard.append(management_row)
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-def get_inventory_keyboard(inventory_items: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
-    """Интерактивная клавиатура инвентаря с кнопками применения расходников"""
+def get_companions_keyboard(companions: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Список спутников героя"""
     keyboard = []
+    for c in companions:
+        name = c["name"]
+        status_text, icon, _ = gl.get_affinity_status(c.get("affinity", 50))
+        btn_text = f"{icon} {name} ({c.get('title', 'Спутник')}) — {c.get('affinity', 50)}%"
+        keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"companion:{c['id']}")])
 
-    # Добавляем кнопки применения для каждого расходуемого предмета в сумке
+    keyboard.append([
+        InlineKeyboardButton(text="◀️ Вернуться к приключению", callback_data="back_to_game")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_companion_detail_keyboard(companion_id: int) -> InlineKeyboardMarkup:
+    """Меню взаимодействия с конкретным спутником"""
+    keyboard = [
+        [InlineKeyboardButton(text="💬 Поговорить по душам", callback_data=f"comp_talk:{companion_id}")],
+        [InlineKeyboardButton(text="🎁 Угостить пайком / припасами (+Симпатия)", callback_data=f"comp_gift:{companion_id}")],
+        [InlineKeyboardButton(text="◀️ Назад к спутникам", callback_data="show_companions")],
+        [InlineKeyboardButton(text="🛡️ Вернуться в игру", callback_data="back_to_game")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_camp_keyboard(has_companion: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура лагеря / привала"""
+    keyboard = [
+        [InlineKeyboardButton(text="🔥 Развести костер и перевязать раны (+20 HP, +15 Sanity)", callback_data="camp_rest")],
+        [InlineKeyboardButton(text="🎒 Проверить рюкзак и припасы", callback_data="show_inventory")]
+    ]
+    if has_companion:
+        keyboard.append([
+            InlineKeyboardButton(text="💬 Побеседовать со спутником у огня", callback_data="show_companions")
+        ])
+    keyboard.append([
+        InlineKeyboardButton(text="◀️ Снять лагерь и продолжить путь", callback_data="back_to_game")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_inventory_keyboard(inventory_items: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Интерактивный инвентарь с применением расходников"""
+    keyboard = []
     for item in inventory_items:
         name = item["item_name"]
         qty = item["quantity"]
@@ -74,7 +135,7 @@ def get_inventory_keyboard(inventory_items: List[Dict[str, Any]]) -> InlineKeybo
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_shop_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура лавки торговца"""
+    """Клавиатура придорожной торговли"""
     keyboard = []
     for item_key, info in gl.SHOP_ITEMS.items():
         keyboard.append([
@@ -112,7 +173,7 @@ def get_main_menu_keyboard(is_dead: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_level_up_keyboard(stat_points: int = 1) -> InlineKeyboardMarkup:
-    """Клавиатура выбора характеристики при Level Up"""
+    """Выбор характеристики при повышении уровня"""
     keyboard = [
         [InlineKeyboardButton(text="💪 +1 к Силе (Урон и напор в бою)", callback_data="lvlup:str")],
         [InlineKeyboardButton(text="🦶 +1 к Ловкости (Уклонение, скрытность, стрельба)", callback_data="lvlup:agi")],
@@ -129,7 +190,7 @@ def get_death_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_restart_confirm_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура подтверждения сброса прогресса"""
+    """Подтверждение сброса прогресса"""
     keyboard = [
         [InlineKeyboardButton(text="💀 Да, начать сначала", callback_data="confirm_restart")],
         [InlineKeyboardButton(text="🛡️ Продолжить текущий путь", callback_data="back_to_game")]
@@ -137,7 +198,7 @@ def get_restart_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_cancel_custom_action_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура отмены ввода кастомного действия"""
+    """Отмена ввода текста"""
     keyboard = [
         [InlineKeyboardButton(text="❌ Отмена (вернуться к выбору)", callback_data="back_to_game")]
     ]
